@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 openssl = "0.10.59"
 rand = "0.8.5"
+
+[features]
+perf = []
