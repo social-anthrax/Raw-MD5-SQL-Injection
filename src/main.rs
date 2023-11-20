@@ -3,7 +3,6 @@ use md5::{
     Digest, Md5, Md5Core,
 };
 use once_cell::sync::Lazy;
-use rand::{distributions, thread_rng, Rng};
 use regex::bytes::Regex;
 
 /// Regex to detect an escape, followed by an OR pattern, followed by another opening single quote then a digit
@@ -18,15 +17,22 @@ fn byte_validate(digest: &[u8]) -> bool {
 // 87153179503375488964249572016766023268706569805029887102402011499288342510775092757977654940386142689199562616975803271832089582121260280598138107679172885818920928633840231384484533108096150415512236913966
 
 fn main() {
+    #[cfg(feature = "time")]
+    let start = std::time::Instant::now();
+
     crack();
+
+    #[cfg(feature = "time")]
+    {
+        let end = std::time::Instant::now();
+        println!("Finished in {:?}", end - start);
+    }
 }
 
 fn crack() {
     // Create all in memory objects here to reduce re-allocation.
     let mut i = 0;
-    let mut buf = String::with_capacity(400);
-    // Ascii codes for digits.
-    let uniform_ascii_digits = distributions::Uniform::from(48..=57);
+    let mut buf: Vec<u8> = Vec::with_capacity(400);
     // Distribution for selecting random
     let mut hasher = Md5::new();
     loop {
@@ -46,11 +52,8 @@ fn crack() {
         i += 1;
 
         // Push new string to buf
-        unsafe {
-            buf.push(char::from_u32_unchecked(
-                thread_rng().sample(uniform_ascii_digits),
-            ));
-        }
+        // Ascii codes for digits.
+        buf.push(fastrand::u8(48..=57));
 
         // Calculate md5 hash
         let gen_digest = rust_digest(&mut hasher, &buf);
@@ -59,7 +62,7 @@ fn crack() {
         // Check if we can create the OR statement from it.
         if byte_validate(digest) {
             println!("Found! i = {i}");
-            println!("Content = {buf}");
+            println!("Content = {buf:?}");
             let str_digest = String::from_utf8_lossy(digest);
             println!("Raw md5 Hash = {str_digest}");
             return;
@@ -67,7 +70,7 @@ fn crack() {
     }
 }
 
-fn rust_digest(hasher: &mut Md5, buf: &str) -> Output<CoreWrapper<Md5Core>> {
+fn rust_digest(hasher: &mut Md5, buf: &[u8]) -> Output<CoreWrapper<Md5Core>> {
     hasher.update(buf);
     hasher.finalize_fixed_reset()
 }
@@ -78,14 +81,20 @@ mod test {
     use crate::{byte_validate, rust_digest};
 
     use md5::{Digest, Md5};
+    use once_cell::sync::Lazy;
 
-    const BUF: &str = "129581926211651571912466741651878684928";
+    static BUF: Lazy<Vec<u8>> = Lazy::new(|| {
+        "129581926211651571912466741651878684928"
+            .chars()
+            .map(|c| c as u8)
+            .collect()
+    });
 
     #[test]
     fn test_rust_md5_validation() {
         let mut hasher = Md5::new();
 
-        let raw_digest = rust_digest(&mut hasher, BUF);
+        let raw_digest = rust_digest(&mut hasher, &BUF);
         let digest = raw_digest.as_slice();
         let str_digest = String::from_utf8_lossy(digest);
         println!("{str_digest}");
