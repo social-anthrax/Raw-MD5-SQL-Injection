@@ -49,6 +49,7 @@ fn window_byte_validate(digest: &[u8]) -> bool {
     false
 }
 
+/// Run a function across multiple threads. Function must terminate upon the atomic bool being set to `true`
 #[cfg(not(feature = "rayon"))]
 fn multi_thread<T, F>(func: F) -> T
 where
@@ -114,6 +115,7 @@ fn main() {
     }
 }
 
+/// Find a string made up of digits that who's raw md5 bytes create an sql injection in the form of OR true.
 fn crack(finished: &AtomicBool) -> Option<String> {
     // Create all in memory objects here to reduce re-allocation.
     let mut i: usize = 0;
