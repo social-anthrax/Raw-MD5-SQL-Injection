@@ -98,9 +98,6 @@ fn rayon_multi_thread<T: Send, F: Fn(&AtomicBool) -> Option<T> + Sync>(func: F) 
 // 87153179503375488964249572016766023268706569805029887102402011499288342510775092757977654940386142689199562616975803271832089582121260280598138107679172885818920928633840231384484533108096150415512236913966
 
 fn main() {
-    #[cfg(feature = "time")]
-    let start = std::time::Instant::now();
-
     #[cfg(all(not(feature = "time"), feature = "rayon"))]
     rayon_multi_thread(crack);
 
@@ -109,6 +106,7 @@ fn main() {
 
     #[cfg(feature = "time")]
     {
+        let start = std::time::Instant::now();
         crack(&AtomicBool::new(false));
         let end = std::time::Instant::now();
         println!("Finished in {:?}", end - start);
